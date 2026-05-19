@@ -85,14 +85,12 @@ class Boid:
             self.die("old_age", world)
 
     def flock(self, world: "World") -> np.ndarray:
-        neighbors = []
-        for other in world.boids:
-            if other is self or not other.alive or other.level != self.level:
-                continue
-            offset = toroidal_offset(self.position, other.position, world.settings.width, world.settings.height)
-            dist = np.linalg.norm(offset)
-            if dist < self.genome.vision_radius:
-                neighbors.append((other, offset, dist))
+        neighbors = world.neighbor_search.nearby_boids(
+            self,
+            radius=self.genome.vision_radius,
+            level=self.level,
+            max_neighbors=10,
+        )
 
         if not neighbors:
             return np.zeros(2, dtype=float)
@@ -101,9 +99,11 @@ class Boid:
         alignment = np.zeros(2, dtype=float)
         cohesion = np.zeros(2, dtype=float)
 
-        for other, offset, dist in neighbors:
-            if dist > 0:
-                separation -= offset / (dist * dist)
+        for other in neighbors:
+            offset = toroidal_offset(self.position, other.position, world.settings.width, world.settings.height)
+            dist_sq = offset[0] * offset[0] + offset[1] * offset[1]
+            if dist_sq > 0:
+                separation -= offset / dist_sq
             alignment += other.velocity
             cohesion += self.position + offset
 
@@ -151,19 +151,21 @@ class Boid:
         return -nearest
 
     def _seek_nearest_level(self, world: "World", level: int) -> np.ndarray:
-        nearest_offset = None
-        nearest_dist = float("inf")
-        for other in world.boids:
-            if other is self or not other.alive or other.level != level:
-                continue
-            offset = toroidal_offset(self.position, other.position, world.settings.width, world.settings.height)
-            dist = np.linalg.norm(offset)
-            if dist < nearest_dist and dist < self.genome.vision_radius:
-                nearest_dist = dist
-                nearest_offset = offset
-
-        if nearest_offset is None:
+        neighbors = world.neighbor_search.nearby_boids(
+            self,
+            radius=self.genome.vision_radius,
+            level=level,
+            max_neighbors=10,
+        )
+        if not neighbors:
             return np.zeros(2, dtype=float)
+
+        nearest_offset = toroidal_offset(
+            self.position,
+            neighbors[0].position,
+            world.settings.width,
+            world.settings.height,
+        )
         return self.steer_toward(nearest_offset)
 
     def die(self, cause: str, world: "World") -> None:

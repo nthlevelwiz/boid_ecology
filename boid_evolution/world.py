@@ -9,6 +9,7 @@ import pygame
 
 from boid import Boid
 from plant import Plant
+from neighbor_search import NeighborSearch
 from settings import SimulationSettings
 from stats import SimulationStats
 from utils import toroidal_offset
@@ -20,6 +21,7 @@ class World:
         self.stats = SimulationStats()
         self.plants: list[Plant] = []
         self.boids: list[Boid] = []
+        self.neighbor_search = NeighborSearch(settings.width, settings.height, wrap_edges=True)
         self.reset()
 
     def reset(self) -> None:
@@ -55,6 +57,7 @@ class World:
 
     def update(self) -> None:
         self.spawn_plants()
+        self.neighbor_search.rebuild(self.boids)
 
         for boid in self.boids:
             boid.update(self)
@@ -63,6 +66,18 @@ class World:
         self.handle_predation()
         self.handle_reproduction()
         self.remove_dead_boids()
+
+        stats = self.neighbor_search.last_stats
+        if stats["queries"] > 0:
+            avg_candidates = stats["candidate_checks"] / stats["queries"]
+            avg_valid = stats["valid_neighbors"] / stats["queries"]
+            print(
+                "[NeighborSearch]"
+                f" boids={stats['boids']}"
+                f" avg_candidate_checks={avg_candidates:.2f}"
+                f" avg_valid_neighbors={avg_valid:.2f}"
+                f" max_valid_before_cap={stats['max_valid_before_cap']}"
+            )
 
     def handle_plant_consumption(self) -> None:
         remaining_plants: list[Plant] = []
