@@ -27,18 +27,18 @@ class Boid:
     @classmethod
     def random_boid(cls, level: int, settings: SimulationSettings) -> "Boid":
         position = np.array(
-            [random.uniform(0, settings.width), random.uniform(0, settings.height)], dtype=float
+            [random.uniform(0, settings.WORLD_WIDTH), random.uniform(0, settings.WORLD_HEIGHT)], dtype=float
         )
         velocity = random_unit_vector() * random.uniform(0.1, 1.0)
         return cls(
             position=position,
             velocity=velocity,
             acceleration=np.zeros(2, dtype=float),
-            energy=settings.starting_energy,
+            energy=settings.start_energy_for_level(level),
             age=0,
             level=level,
             genome=Genome.random_genome(settings),
-            reproduction_cooldown=random.randint(0, settings.reproduction_cooldown_ticks),
+            reproduction_cooldown=random.randint(0, settings.REPRODUCTION_COOLDOWN_TICKS),
         )
 
     def apply_force(self, force: np.ndarray) -> None:
@@ -72,16 +72,16 @@ class Boid:
         self.velocity += self.acceleration
         self.velocity = limit_vector(self.velocity, self.genome.max_speed)
         self.position += self.velocity
-        self.position = wrap_position(self.position, world.settings.width, world.settings.height)
+        self.position = wrap_position(self.position, world.settings.WORLD_WIDTH, world.settings.WORLD_HEIGHT)
         self.acceleration *= 0
 
         speed = np.linalg.norm(self.velocity)
-        energy_loss = self.genome.metabolism + world.settings.movement_cost_factor * speed**2
+        energy_loss = self.genome.metabolism * world.settings.metabolism_multiplier_for_level(self.level) + world.settings.MOVEMENT_COST_FACTOR * speed**2
         self.energy -= energy_loss
 
         if self.energy <= 0:
             self.die("starvation", world)
-        elif self.age >= world.settings.max_age:
+        elif self.age >= world.settings.MAX_AGE_BY_LEVEL.get(self.level, 4000):
             self.die("old_age", world)
 
     def flock(self, world: "World") -> np.ndarray:
@@ -100,7 +100,7 @@ class Boid:
         cohesion = np.zeros(2, dtype=float)
 
         for other in neighbors:
-            offset = toroidal_offset(self.position, other.position, world.settings.width, world.settings.height)
+            offset = toroidal_offset(self.position, other.position, world.settings.WORLD_WIDTH, world.settings.WORLD_HEIGHT)
             dist_sq = offset[0] * offset[0] + offset[1] * offset[1]
             if dist_sq > 0:
                 separation -= offset / dist_sq
@@ -123,7 +123,7 @@ class Boid:
         nearest_offset = None
         nearest_dist = float("inf")
         for plant in world.plants:
-            offset = toroidal_offset(self.position, plant.position, world.settings.width, world.settings.height)
+            offset = toroidal_offset(self.position, plant.position, world.settings.WORLD_WIDTH, world.settings.WORLD_HEIGHT)
             dist = np.linalg.norm(offset)
             if dist < nearest_dist and dist < self.genome.vision_radius:
                 nearest_dist = dist
@@ -163,8 +163,8 @@ class Boid:
         nearest_offset = toroidal_offset(
             self.position,
             neighbors[0].position,
-            world.settings.width,
-            world.settings.height,
+            world.settings.WORLD_WIDTH,
+            world.settings.WORLD_HEIGHT,
         )
         return self.steer_toward(nearest_offset)
 
