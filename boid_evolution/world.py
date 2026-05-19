@@ -1,170 +1,102 @@
-"""World orchestration: entities, updates, interactions, drawing."""
-
 from __future__ import annotations
-
 import random
-
 import numpy as np
 import pygame
-
 from boid import Boid
 from plant import Plant
 from neighbor_search import NeighborSearch
-from settings import SimulationSettings
+from settings import EcosystemSettings
 from stats import SimulationStats
 from utils import toroidal_offset
 
-
 class World:
-    def __init__(self, settings: SimulationSettings):
+    def __init__(self, settings: EcosystemSettings):
         self.settings = settings
         self.stats = SimulationStats()
-        self.plants: list[Plant] = []
-        self.boids: list[Boid] = []
-        self.neighbor_search = NeighborSearch(settings.width, settings.height, wrap_edges=True)
+        self.plants=[]
+        self.boids=[]
+        self.neighbor_search = NeighborSearch(settings.WORLD_WIDTH, settings.WORLD_HEIGHT, wrap_edges=True)
+        self.frames_since_extinction={1:0,2:0,3:0}
         self.reset()
 
-    def reset(self) -> None:
-        self.plants = [self._spawn_plant() for _ in range(self.settings.initial_plants)]
-        self.boids = []
+    def reset(self)->None:
+        self.stats = SimulationStats()
+        self.plants=[self._spawn_plant() for _ in range(self.settings.INITIAL_PLANTS)]
+        self.boids=[]
+        for lvl,count in ((1,self.settings.INITIAL_HERBIVORES),(2,self.settings.INITIAL_PREDATORS),(3,self.settings.INITIAL_APEX_PREDATORS)):
+            for _ in range(count):
+                self.boids.append(Boid.random_boid(level=lvl, settings=self.settings))
+                self.stats.record_birth(lvl)
 
-        for _ in range(self.settings.initial_herbivores):
-            b = Boid.random_boid(level=1, settings=self.settings)
-            self.boids.append(b)
-            self.stats.record_birth(1)
+    def _spawn_plant(self)->Plant:
+        pos=np.array([random.uniform(0,self.settings.WORLD_WIDTH),random.uniform(0,self.settings.WORLD_HEIGHT)],dtype=float)
+        return Plant(position=pos, energy_value=self.settings.PLANT_ENERGY)
 
-        for _ in range(self.settings.initial_predators):
-            b = Boid.random_boid(level=2, settings=self.settings)
-            self.boids.append(b)
-            self.stats.record_birth(2)
-
-        for _ in range(self.settings.initial_apex):
-            b = Boid.random_boid(level=3, settings=self.settings)
-            self.boids.append(b)
-            self.stats.record_birth(3)
-
-    def _spawn_plant(self) -> Plant:
-        pos = np.array(
-            [random.uniform(0, self.settings.width), random.uniform(0, self.settings.height)], dtype=float
-        )
-        return Plant(position=pos, energy_value=self.settings.plant_energy)
-
-    def spawn_plants(self) -> None:
-        for _ in range(self.settings.plant_spawn_rate):
-            if len(self.plants) >= self.settings.max_plants:
-                break
+    def spawn_plants(self)->None:
+        for _ in range(self.settings.PLANT_SPAWN_RATE):
+            if len(self.plants)>=self.settings.MAX_PLANTS: break
             self.plants.append(self._spawn_plant())
 
-    def update(self) -> None:
-        self.spawn_plants()
-        self.neighbor_search.rebuild(self.boids)
+    def _extinction_reseed(self)->None:
+        if not self.settings.EXTINCTION_RESEED_ENABLED: return
+        pops={lvl:sum(1 for b in self.boids if b.alive and b.level==lvl) for lvl in (1,2,3)}
+        for lvl,pop in pops.items():
+            self.frames_since_extinction[lvl]=self.frames_since_extinction[lvl]+1 if pop==0 else 0
+            if self.frames_since_extinction[lvl]>=self.settings.EXTINCTION_RESEED_DELAY:
+                for _ in range(self.settings.RESEED_COUNTS.get(lvl,0)):
+                    self.boids.append(Boid.random_boid(level=lvl, settings=self.settings))
+                    self.stats.record_birth(lvl)
+                self.frames_since_extinction[lvl]=0
 
-        for boid in self.boids:
-            boid.update(self)
+    def update(self)->None:
+        self.spawn_plants(); self.neighbor_search.rebuild(self.boids)
+        for boid in self.boids: boid.update(self)
+        self.handle_plant_consumption(); self.handle_predation(); self.handle_reproduction(); self.remove_dead_boids(); self._extinction_reseed()
+        self.stats.step(self.boids, len(self.plants), self.settings.MAX_PLANTS)
 
-        self.handle_plant_consumption()
-        self.handle_predation()
-        self.handle_reproduction()
-        self.remove_dead_boids()
-
-        stats = self.neighbor_search.last_stats
-        if stats["queries"] > 0:
-            avg_candidates = stats["candidate_checks"] / stats["queries"]
-            avg_valid = stats["valid_neighbors"] / stats["queries"]
-            print(
-                "[NeighborSearch]"
-                f" boids={stats['boids']}"
-                f" avg_candidate_checks={avg_candidates:.2f}"
-                f" avg_valid_neighbors={avg_valid:.2f}"
-                f" max_valid_before_cap={stats['max_valid_before_cap']}"
-            )
-
-    def handle_plant_consumption(self) -> None:
-        remaining_plants: list[Plant] = []
+    def handle_plant_consumption(self)->None:
+        remaining=[]
         for plant in self.plants:
-            eaten = False
+            eaten=False
             for boid in self.boids:
-                if not boid.alive or boid.level != 1:
-                    continue
-                dist = np.linalg.norm(
-                    toroidal_offset(boid.position, plant.position, self.settings.width, self.settings.height)
-                )
-                if dist < self.settings.eat_radius:
-                    boid.energy += plant.energy_value
-                    eaten = True
-                    break
-            if not eaten:
-                remaining_plants.append(plant)
-        self.plants = remaining_plants
+                if not boid.alive or boid.level!=1: continue
+                dist=np.linalg.norm(toroidal_offset(boid.position, plant.position, self.settings.WORLD_WIDTH, self.settings.WORLD_HEIGHT))
+                if dist<self.settings.EAT_RADIUS:
+                    boid.energy += plant.energy_value; eaten=True; break
+            if not eaten: remaining.append(plant)
+        self.plants=remaining
 
-    def handle_predation(self) -> None:
+    def handle_predation(self)->None:
         for predator in self.boids:
-            if not predator.alive or predator.level not in (2, 3):
-                continue
-            target_level = predator.level - 1
-
+            if not predator.alive or predator.level not in (2,3): continue
+            target_level=predator.level-1
             for prey in self.boids:
-                if not prey.alive or prey.level != target_level:
-                    continue
-                dist = np.linalg.norm(
-                    toroidal_offset(predator.position, prey.position, self.settings.width, self.settings.height)
-                )
-                if dist < self.settings.attack_radius:
-                    prey.die("predation", self)
-                    predator.energy += self.settings.prey_energy
-                    break
+                if not prey.alive or prey.level!=target_level: continue
+                dist=np.linalg.norm(toroidal_offset(predator.position, prey.position, self.settings.WORLD_WIDTH, self.settings.WORLD_HEIGHT))
+                if dist<self.settings.ATTACK_RADIUS:
+                    prey.die('predation', self); predator.energy += self.settings.PREY_ENERGY_GAIN.get(predator.level,70); break
 
-    def handle_reproduction(self) -> None:
-        children: list[Boid] = []
+    def handle_reproduction(self)->None:
+        children=[]
         for boid in self.boids:
-            if not boid.alive:
-                continue
-            if (
-                boid.energy >= boid.genome.reproduction_threshold
-                and boid.reproduction_cooldown == 0
-            ):
-                child_pos = boid.position + np.random.uniform(-8.0, 8.0, size=2)
-                child = Boid(
-                    position=np.array([child_pos[0] % self.settings.width, child_pos[1] % self.settings.height]),
-                    velocity=np.copy(boid.velocity) * 0.5,
-                    acceleration=np.zeros(2, dtype=float),
-                    energy=self.settings.child_energy,
-                    age=0,
-                    level=boid.level,
-                    genome=boid.genome.mutated_copy(),
-                    reproduction_cooldown=self.settings.reproduction_cooldown_ticks,
-                )
-                boid.energy -= self.settings.reproduction_cost
-                boid.reproduction_cooldown = self.settings.reproduction_cooldown_ticks
-                children.append(child)
-                self.stats.record_birth(boid.level)
+            if not boid.alive: continue
+            if boid.energy>=self.settings.reproduction_threshold_for_level(boid.level) and boid.reproduction_cooldown==0:
+                child_pos=boid.position+np.random.uniform(-8.0,8.0,size=2)
+                child=Boid(position=np.array([child_pos[0]%self.settings.WORLD_WIDTH, child_pos[1]%self.settings.WORLD_HEIGHT]), velocity=np.copy(boid.velocity)*0.5, acceleration=np.zeros(2,dtype=float), energy=self.settings.child_energy_for_level(boid.level), age=0, level=boid.level, genome=boid.genome.mutated_copy(), reproduction_cooldown=self.settings.REPRODUCTION_COOLDOWN_TICKS)
+                boid.energy -= self.settings.reproduction_cost_for_level(boid.level)
+                boid.reproduction_cooldown=self.settings.REPRODUCTION_COOLDOWN_TICKS
+                children.append(child); self.stats.record_birth(boid.level)
         self.boids.extend(children)
 
-    def remove_dead_boids(self) -> None:
-        self.boids = [b for b in self.boids if b.alive]
+    def remove_dead_boids(self)->None:
+        self.boids=[b for b in self.boids if b.alive]
 
-    def draw(self, surface: pygame.Surface) -> dict[int, dict[str, float]]:
-        surface.fill(self.settings.background_color)
-
-        for plant in self.plants:
-            pygame.draw.circle(surface, self.settings.plant_color, plant.position.astype(int), 2)
-
+    def draw(self, surface: pygame.Surface, fps: float=0.0):
+        surface.fill(self.settings.BACKGROUND_COLOR)
+        for plant in self.plants: pygame.draw.circle(surface, self.settings.PLANT_COLOR, plant.position.astype(int), 2)
         for boid in self.boids:
-            radius = self.settings.boid_base_radius + (boid.level - 1)
-            color = self.settings.level_colors[boid.level]
-            pygame.draw.circle(surface, color, boid.position.astype(int), radius)
-
-            if self.settings.show_vision_debug:
-                pygame.draw.circle(
-                    surface,
-                    color,
-                    boid.position.astype(int),
-                    int(boid.genome.vision_radius),
-                    1,
-                )
-
-        level_stats = self.stats.compute_level_stats(self.boids)
-        if self.settings.show_stats_overlay:
-            self.stats.draw_overlay(surface, level_stats, plant_count=len(self.plants))
-
+            pygame.draw.circle(surface, self.settings.LEVEL_COLORS[boid.level], boid.position.astype(int), self.settings.BOID_BASE_RADIUS+(boid.level-1))
+        level_stats=self.stats.compute_level_stats(self.boids)
+        if self.settings.SHOW_STATS_OVERLAY:
+            self.stats.draw_overlay(surface, self.settings, level_stats, len(self.plants), fps)
         return level_stats

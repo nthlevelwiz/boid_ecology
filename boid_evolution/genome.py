@@ -35,9 +35,9 @@ class Genome:
             food_seek_weight=random.uniform(1.0, 2.6),
             predator_flee_weight=random.uniform(1.2, 2.8),
             prey_chase_weight=random.uniform(0.8, 2.4),
-            metabolism=max(settings.base_metabolism, random.uniform(0.03, 0.12)),
+            metabolism=max(settings.BASE_METABOLISM, random.uniform(0.03, 0.12)),
             reproduction_threshold=max(
-                settings.reproduction_threshold * 0.75,
+                settings.reproduction_threshold_for_level(1) * 0.75,
                 random.uniform(80.0, 130.0),
             ),
             mutation_rate=random.uniform(0.03, 0.12),
